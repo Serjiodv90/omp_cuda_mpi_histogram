@@ -1,1 +1,1 @@
-#omp_cude_mpi_histogram
+#omp_cuda_mpi_histogram
