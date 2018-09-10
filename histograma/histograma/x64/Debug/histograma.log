@@ -1,0 +1,13 @@
+﻿  main.cpp
+d:\parallel computing\hw3\histograma\histograma\histograma\main.cpp(89): warning C4700: uninitialized local variable 'cudaTmpHistogram' used
+d:\parallel computing\hw3\histograma\histograma\histograma\main.cpp(89): warning C4700: uninitialized local variable 'ompTmpHistogram' used
+d:\parallel computing\hw3\histograma\histograma\histograma\main.cpp(89): warning C4700: uninitialized local variable 'histogram' used
+d:\parallel computing\hw3\histograma\histograma\histograma\main.cpp(89): warning C4700: uninitialized local variable 'inputArr' used
+main.obj : error LNK2019: unresolved external symbol MPI_Send referenced in function main
+main.obj : error LNK2019: unresolved external symbol MPI_Recv referenced in function main
+main.obj : error LNK2019: unresolved external symbol MPI_Comm_size referenced in function main
+main.obj : error LNK2019: unresolved external symbol MPI_Comm_rank referenced in function main
+main.obj : error LNK2019: unresolved external symbol MPI_Init referenced in function main
+main.obj : error LNK2019: unresolved external symbol MPI_Finalize referenced in function "void __cdecl checkAllocation(void const *)" (?checkAllocation@@YAXPEBX@Z)
+main.obj : error LNK2019: unresolved external symbol MPI_Abort referenced in function main
+D:\parallel computing\HW3\histograma\histograma\x64\Debug\histograma.exe : fatal error LNK1120: 7 unresolved externals
