@@ -1,82 +1,9 @@
-#define _CRT_SECURE_NO_WARNINGS
-
-#include <mpi.h>
-#include <omp.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-
-#define ARRAY_SIZE 20000
-#define NUMBER_RANGE 256
-#define NUM_OF_PROCS 2
-#define CUDA_NUM_THREADS 500
-#define MASTER 0 
-#define SLAVE 1
-
-void checkAllocation(const void *ptr)
-{
-	if (!ptr)
-	{
-		printf("Allocation not good!");
-		MPI_Finalize();
-		exit(1);
-	}
-}
-
-void initArray(int* a)
-{
-	srand(NULL);
-
-	for (int i = 0; i < ARRAY_SIZE; i++)
-		a[i] = rand() % NUMBER_RANGE;
-	
-}
-
-void allocateArrays(int *inputArr, int* histogram, int* ompTmpHistogram, int* cudaTmpHistogram)
-{
-	inputArr = (int*)malloc(sizeof(int) * ARRAY_SIZE);
-	checkAllocation(inputArr);
-	histogram = (int*)calloc(NUMBER_RANGE, sizeof(int));
-	checkAllocation(histogram);
-	ompTmpHistogram = (int*)calloc(omp_get_num_threads() * NUMBER_RANGE, sizeof(int));
-	checkAllocation(ompTmpHistogram);
-	cudaTmpHistogram = (int*)calloc(CUDA_NUM_THREADS * NUMBER_RANGE, sizeof(int));
-	checkAllocation(cudaTmpHistogram);
-}
-
-void printArray(const int* arr, int size)
-{
-	for (int i = 0; i < size; i++)
-		printf(arr[i] + " ");
-	printf("\n");
-	
-}
-
-//void freeArrayAllocation(int* arrays...)
-//{
-//	
-//}
-
-/* arr - the array to check the histograma
- * size - the pratiall size of the array for the omp threads
+/*	AUTHORS:
+*	Hadar Pur 308248533
+*	Sergei Dvorjin 316859552
 */
-void ompHistogramaCalc(int* arr, int size, int* tmpHistogram)
-{
-	int nThreads = omp_get_num_threads();
-	tmpHistogram = (int*)calloc((nThreads * NUMBER_RANGE), sizeof(int));		//init with 0
-	checkAllocation(tmpHistogram);
 
-#pragma omp parallel for 
-	for (int i = 0; i < size; i++)
-	{
-		int threadId = omp_get_thread_num();
-		int partalStartCell = threadId * NUMBER_RANGE;	// the start cell in the tmpHistogram array for each thread
-		int numToSave = arr[i];	//get the number from the main array (A)
-		tmpHistogram[numToSave + partalStartCell]++;	//increase the count of the number in the partial histogram
-	}
-}
-
-
+#include "mainHelper.h"
 
 
 
@@ -84,42 +11,84 @@ void main(int argc, char *argv[])
 {
 	int myId, numprocs;
 	MPI_Status status;
-	int *inputArr, *histogram, *procInputArray, *ompTmpHistogram, *cudaTmpHistogram;
+	int *inputArr, *histogram, *ompTmpHistogram, *tmpHistogramFromSlave, *cudaTmpHistogram;
 
-	allocateArrays(inputArr, histogram, ompTmpHistogram, cudaTmpHistogram);	     
 
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &myId);
 	MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
-	
+
 	if (numprocs != NUM_OF_PROCS)
 	{
 		printf("Should be only 2 processes\n");
 		MPI_Abort(MPI_COMM_WORLD, 1);
 	}
 
+	allocateArrays(inputArr, histogram, ompTmpHistogram, cudaTmpHistogram);
+
+	int arraySizeForEachProc = ARRAY_SIZE / numprocs;	//the array size that each proccess get
+
 	if (myId == MASTER)
 	{
 		initArray(inputArr);
-		printf("Input array after init: \n");
-		printArray(inputArr, ARRAY_SIZE);
+
+		printf("The sequencial histogram: \n");
+		printArray(sequencialHistogram(inputArr, ARRAY_SIZE, NUMBER_RANGE), NUMBER_RANGE);
 		fflush(stdout);
 
-		MPI_Send((inputArr + ARRAY_SIZE / 2), ARRAY_SIZE / 2, MPI_INT, SLAVE, 0, MPI_COMM_WORLD);
+		MPI_Send((inputArr + arraySizeForEachProc), arraySizeForEachProc, MPI_INT, SLAVE, 0, MPI_COMM_WORLD);
+
 	}
 	else
 	{
-		procInputArray = (int*)malloc(sizeof(int) * (ARRAY_SIZE / 2));
-		checkAllocation(procInputArray);
-		MPI_Recv(procInputArray, (ARRAY_SIZE / 2), MPI_INT, MASTER, 0, MPI_COMM_WORLD, &status);
+		MPI_Recv(inputArr, arraySizeForEachProc, MPI_INT, MASTER, 0, MPI_COMM_WORLD, &status);
 	}
 
-	ompHistogramaCalc(procInputArray, ARRAY_SIZE / 2, ompTmpHistogram);
+	int arraySizeForOmpAndCuda = arraySizeForEachProc / 2;
+
+	//calculate histogram with omp for each process
+	ompHistogramaCalc(inputArr, arraySizeForOmpAndCuda, ompTmpHistogram, NUMBER_RANGE);
+
+	//calculate histogram with cuda for each process. (inputArr + arraySizeForOmpAndCuda) - means that cuda get the second half of the input in the process
+	cudaError_t cudaStatus = manageCudaCalc((inputArr + arraySizeForOmpAndCuda), arraySizeForOmpAndCuda, cudaTmpHistogram, NUMBER_RANGE, cudaNumOfThreads());
+
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "manageCudaCalc failed!");
+		MPI_Abort(MPI_COMM_WORLD, 1);
+	}
+
+	cudaStatus = cudaDeviceReset();
+	if (cudaStatus != cudaSuccess) {
+		fprintf(stderr, "cudaDeviceReset failed!");
+		MPI_Abort(MPI_COMM_WORLD, 1);
+	}
+
+	//combine both cuda and omp temporar histograms to the final histogram of each proccess
+	combineTwoHistograms(ompTmpHistogram, cudaTmpHistogram, histogram);
+
+	if (myId == SLAVE)
+	{
+		MPI_Send(histogram, NUMBER_RANGE, MPI_INT, MASTER, 0, MPI_COMM_WORLD);
+		freeArrayAllocation(4, inputArr, histogram, ompTmpHistogram, cudaTmpHistogram);
+	}
+	else
+	{
+		tmpHistogramFromSlave = (int*)calloc(NUMBER_RANGE, sizeof(int));
+		MPI_Recv(tmpHistogramFromSlave, NUMBER_RANGE, MPI_INT, SLAVE, 0, MPI_COMM_WORLD, &status);
+
+		combineTwoHistograms(tmpHistogramFromSlave, histogram, histogram);
+		int isTheHistogramCorrect = isHistogramsEqual(inputArr, histogram, NUMBER_RANGE, ARRAY_SIZE);
+		printf("\nproccess id: %d\n", myId);
+		printf("are the arrays equal: %s\n", isTheHistogramCorrect == 1 ? "true!" : "false");
+		printf("\nThe combined histogram: \n");
+		printArray(histogram, NUMBER_RANGE);
+		fflush(stdout);
+
+		freeArrayAllocation(4, inputArr, histogram, ompTmpHistogram, cudaTmpHistogram);
+
+	}
 
 
 	MPI_Finalize();
-
-
-
 
 }
